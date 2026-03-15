@@ -1,112 +1,129 @@
 import os
 import requests
 import pandas as pd
-import numpy as np
 import yfinance as yf
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 WATCHLIST = [
-"PKN.WA","PKO.WA","PEO.WA","PZU.WA","KGH.WA","DNP.WA",
-"ALE.WA","CDR.WA","LPP.WA","CCC.WA","MBK.WA","SPL.WA",
-"JSW.WA","ACP.WA","KTY.WA","BDX.WA","OPL.WA","TPE.WA",
-"ENA.WA","MIL.WA","XTB.WA","11B.WA","TEN.WA"
+    "PKN.WA", "PKO.WA", "PEO.WA", "PZU.WA", "KGH.WA", "DNP.WA",
+    "ALE.WA", "CDR.WA", "LPP.WA", "CCC.WA", "MBK.WA", "SPL.WA",
+    "JSW.WA", "ACP.WA", "KTY.WA", "BDX.WA", "OPL.WA", "TPE.WA",
+    "ENA.WA", "MIL.WA", "XTB.WA", "11B.WA", "TEN.WA"
 ]
 
-POLAND = ZoneInfo("Europe/Warsaw")
+def send(msg: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("Brak TELEGRAM_TOKEN lub TELEGRAM_CHAT_ID")
 
-def send(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    r = requests.post(
+        url,
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg
+        },
+        timeout=30
+    )
+    r.raise_for_status()
 
-    url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
 
-    requests.post(url,data={
-        "chat_id":TELEGRAM_CHAT_ID,
-        "text":msg
-    })
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
 
-def rsi(series,period=14):
+    ma_up = up.ewm(com=period - 1, adjust=False).mean()
+    ma_down = down.ewm(com=period - 1, adjust=False).mean()
 
-    delta=series.diff()
+    rs = ma_up / ma_down
+    return 100 - (100 / (1 + rs))
 
-    up=delta.clip(lower=0)
-
-    down=-delta.clip(upper=0)
-
-    ma_up=up.ewm(com=period-1,adjust=False).mean()
-
-    ma_down=down.ewm(com=period-1,adjust=False).mean()
-
-    rs=ma_up/ma_down
-
-    return 100-(100/(1+rs))
-
-def analyze(symbol):
-
-    df=yf.download(symbol,period="6mo",interval="1d",progress=False).reset_index()
-
-    if df.empty:
-
+def analyze(symbol: str):
+    try:
+        df = yf.download(
+            symbol,
+            period="6mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            threads=False
+        )
+    except Exception:
         return None
 
-    df["SMA20"]=df["Close"].rolling(20).mean()
+    if df is None or df.empty:
+        return None
 
-    df["SMA50"]=df["Close"].rolling(50).mean()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-    df["RSI"]=rsi(df["Close"])
+    required_cols = ["Close"]
+    for col in required_cols:
+        if col not in df.columns:
+            return None
 
-    last=df.iloc[-1].to_dict()
+    df = df.copy()
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.dropna(subset=["Close"])
 
-    score=0
+    if len(df) < 50:
+        return None
 
-    if float(last["Close"]) > float(last["SMA20"]):
+    df["SMA20"] = df["Close"].rolling(20).mean()
+    df["SMA50"] = df["Close"].rolling(50).mean()
+    df["RSI"] = rsi(df["Close"])
 
-        score+=10
+    df = df.dropna(subset=["SMA20", "SMA50", "RSI"])
+    if df.empty:
+        return None
 
-    if float(last["SMA20"]) > float(last["SMA50"]):
+    last = df.iloc[-1]
 
-        score+=10
+    close = float(last["Close"])
+    sma20 = float(last["SMA20"])
+    sma50 = float(last["SMA50"])
+    rsi_val = float(last["RSI"])
 
-    if 50<last["RSI"]<70:
+    score = 0
 
-        score+=10
+    if close > sma20:
+        score += 10
+
+    if sma20 > sma50:
+        score += 10
+
+    if 50 < rsi_val < 70:
+        score += 10
 
     return {
-
-        "symbol":symbol,
-
-        "price":round(last["Close"],2),
-
-        "score":score,
-
-        "rsi":round(last["RSI"],1)
-
+        "symbol": symbol,
+        "price": round(close, 2),
+        "score": score,
+        "rsi": round(rsi_val, 1)
     }
 
 def run():
+    results = []
 
-    results=[]
+    for symbol in WATCHLIST:
+        result = analyze(symbol)
+        if result is not None:
+            results.append(result)
 
-    for s in WATCHLIST:
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
 
-        r=analyze(s)
+    if not results:
+        send("GPW BOT\n\nBrak danych do raportu.")
+        return
 
-        if r:
-
-            results.append(r)
-
-    results=sorted(results,key=lambda x:x["score"],reverse=True)
-
-    msg="GPW BOT\n\n"
+    msg = "GPW BOT\n\n"
 
     for r in results[:5]:
-
-        msg+=f"{r['symbol']}  score:{r['score']}  rsi:{r['rsi']}  price:{r['price']}\n"
+        msg += f"{r['symbol']}  score:{r['score']}  rsi:{r['rsi']}  price:{r['price']}\n"
 
     send(msg)
 
-if __name__=="__main__":
-
+if __name__ == "__main__":
     run()
