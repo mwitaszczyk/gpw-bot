@@ -57,7 +57,7 @@ def analyze(symbol):
 
     df["RSI"]=rsi(df["Close"])
 
-    last=df.iloc[-1]
+    last=df.iloc[-1].to_dict()
 
     score=0
 
