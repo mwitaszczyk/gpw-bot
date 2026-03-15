@@ -45,7 +45,7 @@ def rsi(series,period=14):
 
 def analyze(symbol):
 
-    df=yf.download(symbol,period="6mo",interval="1d",progress=False)
+    df=yf.download(symbol,period="6mo",interval="1d",progress=False).reset_index()
 
     if df.empty:
 
