@@ -1,0 +1,28 @@
+name: GPW Bot
+
+on:
+  schedule:
+    - cron: "15 9,12,15 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobranie repozytorium
+        uses: actions/checkout@v4
+
+      - name: Instalacja Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalacja bibliotek
+        run: pip install -r requirements.txt
+
+      - name: Uruchomienie bota
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
