@@ -1,9 +1,9 @@
 name: GPW Bot
 
 on:
-  schedule:
-    - cron: "15 9,12,15 * * 1-5"
   workflow_dispatch:
+  schedule:
+    - cron: "*/15 7-16 * * 1-5"
 
 jobs:
   run-bot:
@@ -25,4 +25,5 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python main.py
