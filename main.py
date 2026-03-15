@@ -61,11 +61,11 @@ def analyze(symbol):
 
     score=0
 
-    if last["Close"]>last["SMA20"]:
+    if float(last["Close"]) > float(last["SMA20"]):
 
         score+=10
 
-    if last["SMA20"]>last["SMA50"]:
+    if float(last["SMA20"]) > float(last["SMA50"]):
 
         score+=10
 
