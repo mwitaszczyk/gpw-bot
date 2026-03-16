@@ -1,31 +1,36 @@
-name: GPW Bot
+name: GPW Smart Money Bot
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "15 9 * * 1-5"
-    - cron: "0 12 * * 1-5"
-    - cron: "0 15 * * 1-5"
+    # Godziny UTC: 10:15 Warsaw = 08:15 UTC (zima) / 09:15 UTC (lato)
+    # Uruchamiamy z marginesem — bot sam sprawdza aktualną godzinę warszawską
+    - cron: "13 8 * * 1-5"   # ~10:15 Warsaw (czas zimowy)
+    - cron: "58 10 * * 1-5"  # ~13:00 Warsaw (czas zimowy)
+    - cron: "58 13 * * 1-5"  # ~16:00 Warsaw (czas zimowy)
+    - cron: "13 9 * * 1-5"   # ~10:15 Warsaw (czas letni)
+    - cron: "58 11 * * 1-5"  # ~13:00 Warsaw (czas letni)
+    - cron: "58 14 * * 1-5"  # ~16:00 Warsaw (czas letni)
+  workflow_dispatch:          # Ręczne uruchomienie (tylko w dni robocze)
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Pobranie repozytorium
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalacja Pythona
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Instalacja bibliotek
-        run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install yfinance pandas requests
 
-      - name: Uruchomienie bota
+      - name: Run bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: python main.py
+        run: python gpw_bot.py
