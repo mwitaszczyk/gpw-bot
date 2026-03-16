@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME", "")
@@ -13,27 +14,34 @@ GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME", "")
 POLAND_TZ = ZoneInfo("Europe/Warsaw")
 REPORT_TIMES = {"10:15", "13:00", "16:00"}
 
-# Rozszerzony, konserwatywny płynny koszyk GPW.
-# Jeśli któryś ticker nie zwróci danych z Yahoo, bot go po prostu pominie.
 WATCHLIST = [
     "PKN.WA", "PKO.WA", "PEO.WA", "PZU.WA", "KGH.WA", "DNP.WA", "ALE.WA", "CDR.WA",
     "LPP.WA", "CCC.WA", "MBK.WA", "SPL.WA", "JSW.WA", "ACP.WA", "KTY.WA", "BDX.WA",
     "OPL.WA", "TPE.WA", "ENA.WA", "MIL.WA", "XTB.WA", "11B.WA", "TEN.WA", "CAR.WA",
-    "NEU.WA", "DOM.WA", "WPL.WA", "APR.WA", "GPW.WA", "BHW.WA", "ASB.WA",
-    "ATT.WA", "LWB.WA", "CPS.WA", "MAB.WA", "ING.WA", "MRC.WA", "KRU.WA",
-    "BDX.WA", "TOR.WA", "RBW.WA", "AMC.WA", "TXT.WA", "PLW.WA", "STP.WA",
-    "PXM.WA", "PCR.WA", "ABE.WA", "DAT.WA", "VOX.WA", "MRB.WA", "KGN.WA"
+    "NEU.WA", "DOM.WA", "WPL.WA", "APR.WA", "GPW.WA", "BHW.WA", "ASB.WA", "ATT.WA",
+    "LWB.WA", "CPS.WA", "MAB.WA", "ING.WA", "MRC.WA", "KRU.WA", "BXD.WA", "TOR.WA",
+    "RBW.WA", "AMC.WA", "TXT.WA", "PLW.WA", "STP.WA", "PXM.WA", "PCR.WA", "ABE.WA",
+    "DAT.WA", "VOX.WA", "MRB.WA", "KGN.WA"
 ]
 
 LIQUIDITY_THRESHOLD_PLN = 1_000_000
 
 
+def is_business_day(now: datetime) -> bool:
+    return now.weekday() < 5
+
+
 def should_send_report() -> bool:
-    # Ręczne uruchomienie z GitHub Actions zawsze ma wysłać raport.
+    now = datetime.now(POLAND_TZ)
+
+    # Twarda blokada weekendów — także przy ręcznym uruchomieniu.
+    if not is_business_day(now):
+        return False
+
+    # Ręczne uruchomienie jest dozwolone tylko w dni robocze.
     if GITHUB_EVENT_NAME == "workflow_dispatch":
         return True
 
-    now = datetime.now(POLAND_TZ)
     return now.strftime("%H:%M") in REPORT_TIMES
 
 
@@ -42,23 +50,25 @@ def send(msg: str) -> None:
         raise RuntimeError("Brak TELEGRAM_TOKEN lub TELEGRAM_CHAT_ID")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(
+    response = requests.post(
         url,
         data={
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg
+            "text": msg,
         },
-        timeout=30
+        timeout=30,
     )
-    r.raise_for_status()
+    response.raise_for_status()
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
+
     ma_up = up.ewm(com=period - 1, adjust=False).mean()
     ma_down = down.ewm(com=period - 1, adjust=False).mean()
+
     rs = ma_up / ma_down
     return 100 - (100 / (1 + rs))
 
@@ -71,7 +81,7 @@ def download_data(symbol: str) -> pd.DataFrame | None:
             interval="1d",
             progress=False,
             auto_adjust=False,
-            threads=False
+            threads=False,
         )
     except Exception:
         return None
@@ -88,6 +98,7 @@ def download_data(symbol: str) -> pd.DataFrame | None:
             return None
 
     df = df.copy()
+
     for col in needed:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -136,7 +147,7 @@ def analyze(symbol: str) -> dict | None:
     high20 = float(last["HIGH20"])
     liq20 = float(last["LIQ20"])
 
-    # Twarde filtry: ma być rzadki, mocny układ.
+    # Twarde filtry — ma być rzadki, mocny układ.
     if not (close > sma20 > sma50):
         return None
 
@@ -162,7 +173,7 @@ def analyze(symbol: str) -> dict | None:
     score += 20  # trend
     score += 20  # mom20
     score += 10  # mom5
-    score += 20  # wolumen
+    score += 20  # volume
     score += 20  # blisko wybicia
     score += 10  # RSI
 
@@ -172,10 +183,11 @@ def analyze(symbol: str) -> dict | None:
         f"wolumen: {vol_spike:.2f}x średniej 20d",
     ]
 
-    extra = []
-    extra.append(f"RSI: {rsi_val:.1f}")
-    extra.append(f"odległość od 20d high: {breakout_distance:.1f}%")
-    extra.append(f"śr. obrót 20d: {liq20:,.0f} PLN".replace(",", " "))
+    extra = [
+        f"RSI: {rsi_val:.1f}",
+        f"odległość od 20d high: {breakout_distance:.1f}%",
+        f"śr. obrót 20d: {liq20:,.0f} PLN".replace(",", " "),
+    ]
 
     return {
         "symbol": symbol,
@@ -231,7 +243,7 @@ def build_message(results: list[dict]) -> str:
 
 def run() -> None:
     if not should_send_report():
-        print("Poza godziną raportu. Koniec.")
+        print("Poza dniem/godziną raportu. Koniec.")
         return
 
     results = []
