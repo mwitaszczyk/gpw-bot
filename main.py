@@ -2,66 +2,47 @@
 GPW SMART MONEY BOT
 ===================
 Wysyła raport na Telegram 3x dziennie w dni robocze (10:15, 13:00, 16:00 Warsaw).
-Skanuje spółki z watchlisty pod kątem 4 setupów swingowych:
-  1. Volume Breakout
-  2. Momentum Surge (z Relative Strength vs WIG20)
-  3. Accumulation Setup (OBV)
-  4. Volatility Squeeze + Expansion (Bollinger Bands)
+Pobiera dynamicznie listę spółek z GPW przez stooq.pl
+Sygnały: KUPUJ / CZEKAJ / UNIKAJ z prostym uzasadnieniem po polsku.
 
 Wymagania:
-  pip install yfinance pandas requests
+  pip install yfinance pandas requests beautifulsoup4
 
 Zmienne środowiskowe (GitHub Secrets):
   TELEGRAM_TOKEN   — token bota Telegram
-  TELEGRAM_CHAT_ID — ID chatu / kanału
+  TELEGRAM_CHAT_ID — ID chatu
 """
 
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import yfinance as yf
+from bs4 import BeautifulSoup
+
 
 # ---------------------------------------------------------------------------
 # Konfiguracja
 # ---------------------------------------------------------------------------
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME", "")
 
-POLAND_TZ = ZoneInfo("Europe/Warsaw")
+POLAND_TZ    = ZoneInfo("Europe/Warsaw")
 REPORT_TIMES = {"10:15", "13:00", "16:00"}
 
-# Watchlista — spółki GPW do skanowania
-WATCHLIST = [
-    "PKN.WA", "PKO.WA", "PEO.WA", "PZU.WA", "KGH.WA", "DNP.WA", "ALE.WA", "CDR.WA",
-    "LPP.WA", "CCC.WA", "MBK.WA", "SPL.WA", "JSW.WA", "ACP.WA", "KTY.WA", "BDX.WA",
-    "OPL.WA", "TPE.WA", "ENA.WA", "MIL.WA", "XTB.WA", "11B.WA", "TEN.WA", "CAR.WA",
-    "NEU.WA", "DOM.WA", "WPL.WA", "APR.WA", "GPW.WA", "BHW.WA", "ASB.WA", "ATT.WA",
-    "LWB.WA", "CPS.WA", "MAB.WA", "ING.WA", "MRC.WA", "KRU.WA", "BXD.WA", "TOR.WA",
-    "RBW.WA", "AMC.WA", "TXT.WA", "PLW.WA", "STP.WA", "PXM.WA", "PCR.WA", "ABE.WA",
-    "DAT.WA", "VOX.WA", "MRB.WA", "KGN.WA",
-]
-
-BENCHMARK = "^WIG20"          # indeks odniesienia dla Relative Strength
-LIQUIDITY_MIN_PLN = 1_000_000  # minimalny średni dzienny obrót (PLN)
-TOP_N = 5                      # ile spółek w raporcie
+BENCHMARK         = "^WIG20"
+LIQUIDITY_MIN_PLN = 2_000_000   # minimalny średni dzienny obrót (PLN)
+TOP_N             = 5           # ile spółek KUPUJ w raporcie
+MIN_DATA_DAYS     = 60          # minimalna historia do analizy
 
 
 # ---------------------------------------------------------------------------
-# Wagi sygnałów (suma = 100)
-# ---------------------------------------------------------------------------
-WEIGHT_VOLUME_BREAKOUT  = 30
-WEIGHT_MOMENTUM_SURGE   = 25
-WEIGHT_ACCUMULATION     = 25
-WEIGHT_SQUEEZE          = 20
-
-
-# ---------------------------------------------------------------------------
-# Pomocnicze: harmonogram
+# Harmonogram
 # ---------------------------------------------------------------------------
 
 def is_business_day(now: datetime) -> bool:
@@ -78,13 +59,61 @@ def should_send_report() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Pomocnicze: wskaźniki techniczne
+# Pobieranie listy spółek GPW ze stooq.pl
+# ---------------------------------------------------------------------------
+
+def get_gpw_tickers() -> list[str]:
+    """
+    Pobiera listę spółek z GPW ze stooq.pl.
+    Zwraca listę tickerów w formacie yfinance (np. PKN.WA).
+    """
+    tickers = []
+    try:
+        url = "https://stooq.pl/t/?i=513"  # lista spółek GPW główny rynek
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Tabela z tickerami
+        table = soup.find("table", {"id": "fth1"})
+        if table is None:
+            raise ValueError("Nie znaleziono tabeli na stooq.pl")
+
+        for row in table.find_all("tr")[1:]:  # pomijamy nagłówek
+            cols = row.find_all("td")
+            if len(cols) >= 2:
+                ticker_raw = cols[1].get_text(strip=True).upper()
+                if ticker_raw:
+                    tickers.append(f"{ticker_raw}.WA")
+
+    except Exception as e:
+        print(f"Błąd pobierania tickerów ze stooq.pl: {e}")
+        # Fallback — podstawowa lista jeśli stooq niedostępny
+        tickers = [
+            "PKN.WA", "PKO.WA", "PEO.WA", "PZU.WA", "KGH.WA", "DNP.WA",
+            "ALE.WA", "CDR.WA", "LPP.WA", "CCC.WA", "MBK.WA", "SPL.WA",
+            "JSW.WA", "ACP.WA", "KTY.WA", "BDX.WA", "OPL.WA", "TPE.WA",
+            "ENA.WA", "MIL.WA", "XTB.WA", "11B.WA", "TEN.WA", "CAR.WA",
+            "NEU.WA", "DOM.WA", "WPL.WA", "APR.WA", "GPW.WA", "BHW.WA",
+            "ASB.WA", "ATT.WA", "LWB.WA", "CPS.WA", "MAB.WA", "ING.WA",
+            "MRC.WA", "KRU.WA", "BXD.WA", "TOR.WA", "RBW.WA", "AMC.WA",
+            "TXT.WA", "PLW.WA", "STP.WA", "PXM.WA", "PCR.WA", "ABE.WA",
+            "DAT.WA", "VOX.WA", "MRB.WA", "KGN.WA",
+        ]
+
+    print(f"Pobrano {len(tickers)} spółek do analizy.")
+    return tickers
+
+
+# ---------------------------------------------------------------------------
+# Wskaźniki techniczne
 # ---------------------------------------------------------------------------
 
 def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
-    up   = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
+    up    = delta.clip(lower=0)
+    down  = -delta.clip(upper=0)
     ma_up   = up.ewm(com=period - 1, adjust=False).mean()
     ma_down = down.ewm(com=period - 1, adjust=False).mean()
     rs = ma_up / ma_down
@@ -96,24 +125,15 @@ def calc_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return (direction * volume).cumsum()
 
 
-def calc_bollinger(close: pd.Series, period: int = 20, std_mult: float = 2.0):
-    sma = close.rolling(period).mean()
-    std = close.rolling(period).std()
-    upper = sma + std_mult * std
-    lower = sma - std_mult * std
-    width = (upper - lower) / sma  # szerokość względna
-    return sma, upper, lower, width
-
-
 # ---------------------------------------------------------------------------
-# Pobieranie danych
+# Pobieranie danych OHLCV
 # ---------------------------------------------------------------------------
 
-def download(symbol: str, period: str = "6mo") -> pd.DataFrame | None:
+def download(symbol: str) -> pd.DataFrame | None:
     try:
         df = yf.download(
             symbol,
-            period=period,
+            period="6mo",
             interval="1d",
             progress=False,
             auto_adjust=False,
@@ -135,11 +155,10 @@ def download(symbol: str, period: str = "6mo") -> pd.DataFrame | None:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=needed)
-    return df if len(df) >= 60 else None
+    return df if len(df) >= MIN_DATA_DAYS else None
 
 
 def download_benchmark() -> pd.Series | None:
-    """Zwraca serię dziennych zwrotów benchmarku (WIG20)."""
     df = download(BENCHMARK)
     if df is None:
         return None
@@ -147,204 +166,7 @@ def download_benchmark() -> pd.Series | None:
 
 
 # ---------------------------------------------------------------------------
-# Sygnały
-# ---------------------------------------------------------------------------
-
-def signal_volume_breakout(df: pd.DataFrame) -> tuple[float, list[str]]:
-    """
-    Volume Breakout:
-    - kurs przebija 20-dniowe maksimum (lub jest bardzo blisko)
-    - wolumen >= 2x średniej 20d
-    - RSI w zakresie 50–75 (nie wykupiony, ale z siłą)
-    Zwraca (score 0–100, lista powodów).
-    """
-    df["VOLAVG20"] = df["Volume"].rolling(20).mean()
-    df["HIGH20"]   = df["High"].rolling(20).max()
-    df["RSI"]      = calc_rsi(df["Close"])
-    df = df.dropna()
-    if df.empty:
-        return 0.0, []
-
-    last = df.iloc[-1]
-    close    = float(last["Close"])
-    high20   = float(last["HIGH20"])
-    volume   = float(last["Volume"])
-    volavg20 = float(last["VOLAVG20"])
-    rsi_val  = float(last["RSI"])
-
-    vol_ratio = volume / volavg20 if volavg20 > 0 else 0
-    breakout  = close / high20 if high20 > 0 else 0
-
-    if vol_ratio < 1.5 or breakout < 0.97 or not (48 <= rsi_val <= 78):
-        return 0.0, []
-
-    # Scoring ciągły: im bliżej/powyżej high20 i wyższy wolumen, tym lepiej
-    score = 0.0
-    score += min(vol_ratio / 3.0, 1.0) * 50      # do 50 pkt za wolumen (max przy 3x)
-    score += min((breakout - 0.97) / 0.05, 1.0) * 30  # do 30 pkt za bliskość wybicia
-    score += (1 - abs(rsi_val - 62) / 20) * 20   # do 20 pkt za RSI w optimum ~62
-
-    reasons = [
-        f"wolumen {vol_ratio:.1f}x średniej",
-        f"kurs {(breakout-1)*100:+.1f}% od 20d high",
-        f"RSI {rsi_val:.0f}",
-    ]
-    return min(score, 100.0), reasons
-
-
-def signal_momentum_surge(
-    df: pd.DataFrame, benchmark_returns: pd.Series | None
-) -> tuple[float, list[str]]:
-    """
-    Momentum Surge + Relative Strength:
-    - silny ruch 5d i 20d
-    - spółka mocniejsza niż WIG20 w tym samym oknie
-    """
-    df["MOM5"]  = df["Close"].pct_change(5)
-    df["MOM20"] = df["Close"].pct_change(20)
-    df["SMA20"] = df["Close"].rolling(20).mean()
-    df["SMA50"] = df["Close"].rolling(50).mean()
-    df = df.dropna()
-    if df.empty:
-        return 0.0, []
-
-    last = df.iloc[-1]
-    mom5  = float(last["MOM5"])
-    mom20 = float(last["MOM20"])
-    close = float(last["Close"])
-    sma20 = float(last["SMA20"])
-    sma50 = float(last["SMA50"])
-
-    # Twarde filtry
-    if mom20 < 0.04 or mom5 < 0.01 or close <= sma20 or sma20 <= sma50:
-        return 0.0, []
-
-    # Relative Strength vs benchmark
-    rs_bonus = 0.0
-    rs_label = ""
-    if benchmark_returns is not None:
-        # Wyrównaj indeksy
-        shared = df["Close"].pct_change(20).dropna()
-        bench  = benchmark_returns.reindex(shared.index).dropna()
-        shared = shared.reindex(bench.index)
-        if not shared.empty:
-            stock_ret = float(shared.iloc[-1])
-            bench_ret = float(bench.iloc[-1])
-            rs = stock_ret - bench_ret
-            if rs > 0:
-                rs_bonus = min(rs / 0.10, 1.0) * 30  # max 30 pkt przy RS > 10pp
-                rs_label = f"RS vs WIG20: {rs*100:+.1f}pp"
-
-    score = 0.0
-    score += min(mom20 / 0.15, 1.0) * 40   # do 40 pkt (optimum: +15%)
-    score += min(mom5  / 0.06, 1.0) * 30   # do 30 pkt (optimum: +6%)
-    score += rs_bonus
-
-    reasons = [
-        f"momentum 20d: {mom20*100:+.1f}%",
-        f"momentum 5d: {mom5*100:+.1f}%",
-    ]
-    if rs_label:
-        reasons.append(rs_label)
-
-    return min(score, 100.0), reasons
-
-
-def signal_accumulation(df: pd.DataFrame) -> tuple[float, list[str]]:
-    """
-    Accumulation Setup (OBV):
-    - OBV rośnie przez ostatnie N dni gdy kurs jest relatywnie spokojny
-    - dywergencja: OBV idzie w górę szybciej niż kurs → akumulacja
-    """
-    df["OBV"] = calc_obv(df["Close"], df["Volume"])
-    df = df.dropna()
-    if len(df) < 20:
-        return 0.0, []
-
-    # Okno 10 dni
-    window = 10
-    recent = df.iloc[-window:]
-
-    obv_change   = (float(recent["OBV"].iloc[-1]) - float(recent["OBV"].iloc[0]))
-    price_change = (float(recent["Close"].iloc[-1]) / float(recent["Close"].iloc[0])) - 1
-
-    # OBV musi rosnąć
-    if obv_change <= 0:
-        return 0.0, []
-
-    # Normalizuj OBV change do % (vs średni wolumen)
-    avg_vol = float(df["Volume"].tail(20).mean())
-    obv_pct = obv_change / (avg_vol * window) if avg_vol > 0 else 0
-
-    # Akumulacja: OBV rośnie, kurs nie uciekł jeszcze (price_change < 0.08)
-    if price_change > 0.10:
-        return 0.0, []  # kurs już wybił — to nie jest "pre-breakout" accumulation
-
-    # Im więcej OBV rośnie przy spokojnym kursie, tym lepszy sygnał
-    divergence = obv_pct / max(abs(price_change), 0.005)
-
-    score = min(divergence * 20, 60.0)  # max 60 za samą dywergencję
-    score += min(obv_pct * 200, 40.0)   # max 40 za bezwzględny wzrost OBV
-
-    if score < 15:
-        return 0.0, []
-
-    reasons = [
-        f"OBV +{obv_pct*100:.1f}% (10d, vs avg vol)",
-        f"cena {price_change*100:+.1f}% w tym czasie",
-        "akumulacja bez ucieczki kursu",
-    ]
-    return min(score, 100.0), reasons
-
-
-def signal_squeeze(df: pd.DataFrame) -> tuple[float, list[str]]:
-    """
-    Volatility Squeeze + Expansion:
-    - Bollinger Bands bardzo wąskie (historycznie niski width) → cisza
-    - ostatni dzień: nagły wzrost wolumenu i ceny → potencjalny kierunek
-    """
-    sma, upper, lower, width = calc_bollinger(df["Close"])
-    df["BB_WIDTH"] = width
-    df["VOLAVG20"] = df["Volume"].rolling(20).mean()
-    df = df.dropna()
-    if len(df) < 30:
-        return 0.0, []
-
-    last     = df.iloc[-1]
-    bb_width = float(last["BB_WIDTH"])
-    volume   = float(last["Volume"])
-    volavg20 = float(last["VOLAVG20"])
-    close    = float(last["Close"])
-    sma_val  = float(sma.iloc[-1])
-
-    # Historyczne percentyle szerokości BB (ostatnie 60 sesji)
-    hist_width = df["BB_WIDTH"].tail(60)
-    pct10 = float(hist_width.quantile(0.10))
-    pct30 = float(hist_width.quantile(0.30))
-
-    # Squeeze: obecna szerokość w dolnych 30% historii
-    if bb_width > pct30:
-        return 0.0, []
-
-    # Ekspansja: wolumen skok i kurs powyżej SMA
-    vol_ratio = volume / volavg20 if volavg20 > 0 else 0
-    if vol_ratio < 1.3 or close <= sma_val:
-        return 0.0, []
-
-    # Im głębszy squeeze i silniejsza ekspansja, tym lepiej
-    squeeze_depth = 1 - (bb_width / pct30)  # 0–1, im niżej tym lepiej
-    score = squeeze_depth * 50 + min((vol_ratio - 1.3) / 1.7, 1.0) * 50
-
-    reasons = [
-        f"BB width w {bb_width/pct10*10:.0f}. percentylu (60d)",
-        f"wolumen {vol_ratio:.1f}x średniej przy ekspansji",
-        "squeeze przed potencjalnym ruchem",
-    ]
-    return min(score, 100.0), reasons
-
-
-# ---------------------------------------------------------------------------
-# Główna analiza spółki
+# Główna analiza — decyzja KUPUJ / CZEKAJ / UNIKAJ
 # ---------------------------------------------------------------------------
 
 def analyze(symbol: str, benchmark_returns: pd.Series | None) -> dict | None:
@@ -352,54 +174,170 @@ def analyze(symbol: str, benchmark_returns: pd.Series | None) -> dict | None:
     if df is None:
         return None
 
-    # Filtr płynności
-    df["VALUE"]  = df["Close"] * df["Volume"]
-    df["LIQ20"]  = df["VALUE"].rolling(20).mean()
-    if df.empty or pd.isna(df["LIQ20"].iloc[-1]):
-        return None
-    if float(df["LIQ20"].iloc[-1]) < LIQUIDITY_MIN_PLN:
+    # --- Filtr płynności ---
+    df["VALUE"] = df["Close"] * df["Volume"]
+    df["LIQ20"] = df["VALUE"].rolling(20).mean()
+    if df["LIQ20"].iloc[-1] < LIQUIDITY_MIN_PLN:
         return None
 
-    liq20 = float(df["LIQ20"].iloc[-1])
-    price = float(df["Close"].iloc[-1])
+    # --- Wskaźniki ---
+    df["SMA20"]   = df["Close"].rolling(20).mean()
+    df["SMA50"]   = df["Close"].rolling(50).mean()
+    df["RSI"]     = calc_rsi(df["Close"])
+    df["MOM5"]    = df["Close"].pct_change(5)
+    df["MOM20"]   = df["Close"].pct_change(20)
+    df["VOL20"]   = df["Volume"].rolling(20).mean()
+    df["HIGH20"]  = df["High"].rolling(20).max()
+    df["OBV"]     = calc_obv(df["Close"], df["Volume"])
+    df["BB_MID"]  = df["Close"].rolling(20).mean()
+    df["BB_STD"]  = df["Close"].rolling(20).std()
+    df["BB_UP"]   = df["BB_MID"] + 2 * df["BB_STD"]
+    df["BB_LOW"]  = df["BB_MID"] - 2 * df["BB_STD"]
 
-    # Każdy sygnał zwraca (score 0-100, powody)
-    s1, r1 = signal_volume_breakout(df.copy())
-    s2, r2 = signal_momentum_surge(df.copy(), benchmark_returns)
-    s3, r3 = signal_accumulation(df.copy())
-    s4, r4 = signal_squeeze(df.copy())
-
-    # Ważony score końcowy
-    total_score = (
-        s1 * WEIGHT_VOLUME_BREAKOUT / 100
-        + s2 * WEIGHT_MOMENTUM_SURGE / 100
-        + s3 * WEIGHT_ACCUMULATION  / 100
-        + s4 * WEIGHT_SQUEEZE       / 100
-    )
-
-    if total_score < 8:
+    df = df.dropna()
+    if df.empty:
         return None
 
-    # Zbieramy aktywne sygnały (score > 0)
-    active_signals = []
-    if s1 > 0:
-        active_signals.append(("📈 Volume Breakout", s1, r1))
-    if s2 > 0:
-        active_signals.append(("🚀 Momentum Surge", s2, r2))
-    if s3 > 0:
-        active_signals.append(("🏦 Akumulacja (OBV)", s3, r3))
-    if s4 > 0:
-        active_signals.append(("🔥 Squeeze", s4, r4))
+    last = df.iloc[-1]
 
-    if not active_signals:
+    close   = float(last["Close"])
+    sma20   = float(last["SMA20"])
+    sma50   = float(last["SMA50"])
+    rsi     = float(last["RSI"])
+    mom5    = float(last["MOM5"])
+    mom20   = float(last["MOM20"])
+    volume  = float(last["Volume"])
+    vol20   = float(last["VOL20"])
+    high20  = float(last["HIGH20"])
+    liq20   = float(last["LIQ20"])
+    bb_low  = float(last["BB_LOW"])
+    bb_up   = float(last["BB_UP"])
+    bb_mid  = float(last["BB_MID"])
+
+    vol_ratio = volume / vol20 if vol20 > 0 else 0
+
+    # --- Relative Strength vs WIG20 ---
+    rs_vs_wig = 0.0
+    if benchmark_returns is not None:
+        stock_ret = df["Close"].pct_change(20).dropna()
+        bench     = benchmark_returns.reindex(stock_ret.index).dropna()
+        stock_ret = stock_ret.reindex(bench.index)
+        if not stock_ret.empty:
+            rs_vs_wig = float(stock_ret.iloc[-1]) - float(bench.iloc[-1])
+
+    # --- OBV trend (ostatnie 10 dni) ---
+    obv_trend = float(df["OBV"].iloc[-1]) - float(df["OBV"].iloc[-10])
+    avg_vol   = float(df["Volume"].tail(20).mean())
+    obv_rosnace = obv_trend > avg_vol * 2  # OBV rośnie wyraźnie
+
+    # =========================================================
+    # LOGIKA DECYZYJNA
+    # =========================================================
+
+    powody_kupuj  = []
+    powody_czekaj = []
+    powody_unikaj = []
+
+    # --- SYGNAŁY POZYTYWNE (KUPUJ) ---
+
+    # 1. Trend wzrostowy
+    if close > sma20 > sma50:
+        powody_kupuj.append("kurs powyżej średnich — trend wzrostowy")
+
+    # 2. Silny momentum
+    if mom20 > 0.08:
+        powody_kupuj.append(f"wzrost o {mom20*100:.0f}% w ciągu miesiąca")
+    elif mom20 > 0.04:
+        powody_kupuj.append(f"umiarkowany wzrost {mom20*100:.0f}% w miesiącu")
+
+    # 3. Wolumen potwierdza ruch
+    if vol_ratio >= 2.0 and mom5 > 0:
+        powody_kupuj.append(f"duże zainteresowanie — wolumen {vol_ratio:.1f}x powyżej średniej")
+    elif vol_ratio >= 1.5 and mom5 > 0:
+        powody_kupuj.append(f"rosnące zainteresowanie — wolumen {vol_ratio:.1f}x średniej")
+
+    # 4. Blisko wybicia z oporu
+    breakout_dist = (close / high20 - 1) * 100
+    if breakout_dist >= -1.5:
+        powody_kupuj.append("kurs blisko 20-dniowego maksimum — możliwe wybicie")
+
+    # 5. RSI w strefie siły (nie wykupiony)
+    if 55 <= rsi <= 70:
+        powody_kupuj.append(f"RSI {rsi:.0f} — spółka ma siłę, ale nie jest wykupiona")
+
+    # 6. Smart money — OBV rośnie
+    if obv_rosnace and mom20 < 0.05:
+        powody_kupuj.append("instytucje mogą akumulować — wolumen rośnie przy spokojnym kursie")
+
+    # 7. Relative Strength
+    if rs_vs_wig > 0.05:
+        powody_kupuj.append(f"mocniejsza od WIG20 o {rs_vs_wig*100:.0f}pp w ostatnim miesiącu")
+
+    # --- SYGNAŁY OSTRZEGAWCZE (CZEKAJ/UNIKAJ) ---
+
+    # Trend spadkowy
+    if close < sma50:
+        powody_unikaj.append("kurs poniżej długiej średniej — trend spadkowy")
+    elif close < sma20:
+        powody_czekaj.append("kurs poniżej krótkoterminowej średniej — brak trendu")
+
+    # Wykupienie
+    if rsi > 75:
+        powody_unikaj.append(f"RSI {rsi:.0f} — spółka silnie wykupiona, ryzyko korekty")
+    elif rsi > 70:
+        powody_czekaj.append(f"RSI {rsi:.0f} — spółka blisko wykupienia")
+
+    # Wyprzedanie
+    if rsi < 35:
+        powody_czekaj.append(f"RSI {rsi:.0f} — możliwe odbicie, ale brak sygnału kupna")
+
+    # Słaby momentum
+    if mom20 < -0.05:
+        powody_unikaj.append(f"spadek o {abs(mom20)*100:.0f}% w ciągu miesiąca")
+
+    # Wolumen przy spadku
+    if vol_ratio >= 1.8 and mom5 < -0.02:
+        powody_unikaj.append(f"duży wolumen przy spadku — wyprzedaż")
+
+    # Słabsza od rynku
+    if rs_vs_wig < -0.08:
+        powody_unikaj.append(f"słabsza od WIG20 o {abs(rs_vs_wig)*100:.0f}pp — inwestorzy omijają")
+
+    # =========================================================
+    # DECYZJA KOŃCOWA
+    # =========================================================
+
+    kupuj_score = len(powody_kupuj)
+    unikaj_score = len(powody_unikaj)
+
+    if unikaj_score >= 2:
+        decyzja = "UNIKAJ"
+        powody = powody_unikaj[:3]
+    elif kupuj_score >= 3 and unikaj_score == 0:
+        decyzja = "KUPUJ"
+        powody = powody_kupuj[:4]
+    elif kupuj_score >= 2 and unikaj_score <= 1:
+        decyzja = "CZEKAJ"
+        powody = powody_kupuj[:2] + powody_czekaj[:1]
+    elif kupuj_score <= 1:
+        decyzja = "CZEKAJ"
+        powody = powody_czekaj[:2] if powody_czekaj else ["brak wyraźnych sygnałów"]
+    else:
+        decyzja = "CZEKAJ"
+        powody = (powody_kupuj[:1] + powody_czekaj[:1] + powody_unikaj[:1])[:3]
+
+    if not powody:
         return None
 
     return {
-        "symbol": symbol,
-        "score": round(total_score, 1),
-        "price": round(price, 2),
+        "symbol": symbol.replace(".WA", ""),
+        "decyzja": decyzja,
+        "kupuj_score": kupuj_score,
+        "cena": round(close, 2),
         "liq20": liq20,
-        "signals": active_signals,
+        "powody": powody,
+        "mom20": mom20,
+        "rsi": rsi,
     }
 
 
@@ -407,40 +345,54 @@ def analyze(symbol: str, benchmark_returns: pd.Series | None) -> dict | None:
 # Budowanie wiadomości
 # ---------------------------------------------------------------------------
 
+EMOJI = {
+    "KUPUJ":  "🟢",
+    "CZEKAJ": "🟡",
+    "UNIKAJ": "🔴",
+}
+
+
 def format_pln(value: float) -> str:
     if value >= 1_000_000:
         return f"{value/1_000_000:.1f}M PLN"
     return f"{value/1_000:.0f}K PLN"
 
 
-def build_message(results: list[dict]) -> str:
+def build_message(kupuj: list, czekaj: list, unikaj_count: int) -> str:
     now_str = datetime.now(POLAND_TZ).strftime("%d.%m.%Y %H:%M")
+    lines = [f"📊 GPW SMART MONEY BOT", f"{now_str}", "─" * 28]
 
-    header = f"📊 GPW SMART MONEY BOT\n{now_str}\n{'─'*28}\n"
+    if not kupuj:
+        lines += [
+            "",
+            "🟡 BRAK SYGNAŁÓW KUPNA",
+            "",
+            "Dziś żadna płynna spółka nie spełnia",
+            "kryteriów do zakupu.",
+            "Najlepiej poczekać na lepszy moment.",
+        ]
+    else:
+        lines += ["", f"🟢 DO ROZWAŻENIA ({len(kupuj)} spółek):", ""]
+        for r in kupuj:
+            lines.append(
+                f"{EMOJI['KUPUJ']} {r['symbol']}  |  {r['cena']} PLN"
+            )
+            for p in r["powody"]:
+                lines.append(f"   · {p}")
+            lines.append(
+                f"   Obrót śr.: {format_pln(r['liq20'])}"
+            )
+            lines.append("")
 
-    if not results:
-        return (
-            header
-            + "❌ BRAK SYGNAŁU\n\n"
-            + "Żadna spółka z watchlisty\n"
-            + "nie spełnia kryteriów swingowych.\n"
-            + "Rynek bez wyraźnych setupów."
-        )
-
-    lines = [header]
-
-    for i, r in enumerate(results[:TOP_N], 1):
-        lines.append(f"{'🥇' if i==1 else f'{i}.'} {r['symbol']}  |  score: {r['score']:.0f}/100")
-        lines.append(f"   Cena: {r['price']} PLN  |  Obrót śr.: {format_pln(r['liq20'])}")
-
-        for sig_name, sig_score, sig_reasons in r["signals"]:
-            lines.append(f"   {sig_name}  ({sig_score:.0f}pkt)")
-            for reason in sig_reasons:
-                lines.append(f"     · {reason}")
-
+    if czekaj:
+        lines.append(f"🟡 OBSERWUJ ({len(czekaj)} spółek): " +
+                     ", ".join(r["symbol"] for r in czekaj[:8]))
         lines.append("")
 
+    lines.append(f"🔴 Odfiltrowano: {unikaj_count} spółek w trendzie spadkowym")
+    lines.append("")
     lines.append("⚠️ To nie jest porada inwestycyjna.")
+
     return "\n".join(lines)
 
 
@@ -450,7 +402,7 @@ def build_message(results: list[dict]) -> str:
 
 def send_telegram(msg: str) -> None:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError("Brak TELEGRAM_TOKEN lub TELEGRAM_CHAT_ID w env")
+        raise RuntimeError("Brak TELEGRAM_TOKEN lub TELEGRAM_CHAT_ID")
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     response = requests.post(
@@ -470,24 +422,50 @@ def run() -> None:
         print("Poza dniem/godziną raportu. Koniec.")
         return
 
-    print("Pobieranie benchmarku...")
+    print("Pobieranie listy spółek GPW...")
+    tickers = get_gpw_tickers()
+
+    print("Pobieranie benchmarku (WIG20)...")
     benchmark_returns = download_benchmark()
 
-    results = []
-    for symbol in WATCHLIST:
-        print(f"  Analizuję {symbol}...")
-        result = analyze(symbol, benchmark_returns)
-        if result is not None:
-            results.append(result)
+    kupuj  = []
+    czekaj = []
+    unikaj_count = 0
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    for i, symbol in enumerate(tickers):
+        print(f"  [{i+1}/{len(tickers)}] Analizuję {symbol}...")
+        try:
+            result = analyze(symbol, benchmark_returns)
+        except Exception as e:
+            print(f"    Błąd: {e}")
+            continue
 
-    msg = build_message(results)
+        if result is None:
+            continue
+
+        if result["decyzja"] == "KUPUJ":
+            kupuj.append(result)
+        elif result["decyzja"] == "CZEKAJ":
+            czekaj.append(result)
+        else:
+            unikaj_count += 1
+
+        # Małe opóźnienie żeby nie przeciążać yfinance
+        time.sleep(0.3)
+
+    # Sortuj KUPUJ po sile (liczba powodów * momentum)
+    kupuj.sort(key=lambda x: (x["kupuj_score"], x["mom20"]), reverse=True)
+    kupuj = kupuj[:TOP_N]
+
+    # Sortuj CZEKAJ alfabetycznie
+    czekaj.sort(key=lambda x: x["symbol"])
+
+    msg = build_message(kupuj, czekaj, unikaj_count)
     print("\n--- WIADOMOŚĆ ---")
     print(msg)
 
     send_telegram(msg)
-    print("Wysłano na Telegram.")
+    print("\nWysłano na Telegram.")
 
 
 if __name__ == "__main__":
