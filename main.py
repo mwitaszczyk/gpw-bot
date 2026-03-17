@@ -33,8 +33,7 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME", "")
 
 POLAND_TZ    = ZoneInfo("Europe/Warsaw")
-REPORT_TIMES = {"10:15", "13:00", "16:00"}
-
+REPORT_TIMES = {"10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"}
 BENCHMARK         = "^WIG20"
 LIQUIDITY_MIN_PLN = 2_000_000   # minimalny średni dzienny obrót (PLN)
 TOP_N             = 5           # ile spółek KUPUJ w raporcie
